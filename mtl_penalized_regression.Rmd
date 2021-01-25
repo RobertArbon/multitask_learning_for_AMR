@@ -1,0 +1,77 @@
+---
+title: "Farms as tasks"
+author: "Robert Arbon"
+date: "07/05/2019"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+rm(list=ls())
+knitr::opts_chunk$set(echo = TRUE)
+library(reshape2)
+library(RMTL)
+library(glmnet)
+library(tidyverse)
+library(visdat)
+library(caret)
+set.seed(42)
+```
+
+# Introduction
+
+This is an example of using multi-task learning as an alternative to multi-level modelling. CTX-M 
+resistance on different farms are treated as separate tasks and a group lasso is placed over the
+model to select features which predict resistance across all farms. 
+
+This code is an example of the type of analysis which was performed. Confidentiality requires that the 
+real code is not shared. 
+
+
+# Get data
+
+[REDACTED]
+
+Get the data and remove the unwanted columns. 
+
+```{r}
+
+df<- read_rds(path=paste0(path_to_var, 'pw_ready_for_model.rds'))
+df <- filter(df, df$plain_undiluted>0)
+df <- select(df, -c(sample_id, visit_number, date_collected, amp_c, ct_pos, cipR, cipro_undiluted, plain_undiluted))
+head(df)
+```
+
+Remove the missing values and visualise the types: 
+
+```{r}
+df <- df[,colSums(is.na(df))==0]
+vis_dat(df, sort_type = F)
+```
+
+## Separate farms as tasks
+
+Create the design matrix: 
+
+```{r}
+farms <- unique(df$farm)
+X = list()
+Y = list()
+for(i in 1:length(farms)){
+  tmp <- filter(df, farm==farms[i]) %>%
+    select(-farm, -ctx_m)
+  dummy <- dummyVars(~ ., data=tmp, fullRank=T)
+  x <- predict(dummy, tmp)
+  class(x)
+  X[[i]] <- matrix(x)
+  y <- (df$ctx_m==1)*1
+  y[y==0] <- -1
+  Y[[i]] <- matrix(y)
+  
+}
+```
+
+Fit the model and select regularization coefficient. 
+
+```{r}
+fitr <- MTL(X, Y, type="Classification", Regularization="Lasso", Lam1_seq=10^seq(1,-4, -1),  Lam2=0, opts=list(init=0,  tol=10^-6, maxIter=1500), nfolds=10, stratify=FALSE, parallel=FALSE)
+```

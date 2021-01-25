@@ -1,0 +1,138 @@
+---
+title: "RMTL"
+author: "Robert Arbon"
+date: "26/04/2019"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## Introduction
+
+In this workbook I'll be exploring the RMTL package with the simulated datasets.  
+
+
+### Create ground truth model
+
+This function creates data by setting up a matrix `W` which relates tasks to predictors. Each column is just the regression coefficients for each standalone task.  Each row is related to the importance of each predictor to each task. From this matrix, we can generate DVs from random IVs (`Y` and `X`). There are also test sets (`tY` and `tX`). 
+
+
+```{r}
+library(RMTL)
+set.seed(2)
+num_tasks = 5
+num_predictors = 50
+num_samples = 100
+
+datar <- Create_simulated_data(t=num_tasks, p=num_predictors, n=num_samples, Regularization="L21", type="Regression")
+
+str(datar)
+```
+
+## Visualising the task structure. 
+
+W encodes all the information about the tasks and their relationship. We can view this as a heat map. 
+
+```{r, echo=False}
+library(reshape2)
+W <- datar$W
+colnames(W) <- paste(c('T'), 1:num_tasks, sep='')
+rownames(W) <- paste(c('p'), 1:num_predictors, sep='')
+W_long <- reshape2::melt(W)
+W
+```
+
+```{r}
+ggplot(W_long, aes(x = Var2, y = Var1)) + 
+  geom_raster(aes(fill=value)) + 
+  scale_fill_gradient2() +
+  labs(x="Tasks", y="Predictors", title="Task Relatedness") 
+```
+
+### Single task prediction
+
+Let's first try to take one of the tasks and train a prediction model on it. We'll try three different models, a simple linear model with no regularization, then lasso and elasticnet  model. 
+
+#### No regularization
+
+Here we fit a standard linear model with no regularization and then plot the predictions vs the actual values. 
+```{r}
+plot_pred <- function(pred, act){
+  results <- data.frame(prediction=pred, actual=act)
+  title <- sprintf('MSE %4.2f', mse(results$actual, results$prediction))
+  ggplot(results,aes(x=actual, y=prediction)) + geom_point() +   labs(x="Actual", y="Prediction", title=title) 
+  
+}
+
+```
+
+```{r}
+library(Metrics)
+
+task <- 3
+mod_no_reg <- lm(datar$Y[[task]] ~ datar$X[[task]])
+predY = predict(mod_no_reg, data.frame(datar$tX[[task]]))
+plot_pred(predY, datar$tY[[task]])
+
+
+```
+
+This is absolutely terrible. Let's use a lasso model and use CV to select the value of the regularization coefficient. 
+
+```{r}
+mod_lasso <- cv.glmnet(datar$X[[task]], datar$Y[[task]], alpha=1, family="gaussian", nlambda=50)
+
+plot(mod_lasso)
+```
+
+We can predict 
+```{r}
+predY <- predict(mod_lasso, newx = datar$tX[[task]], s = "lambda.min")
+predY <- as.vector(predY)
+plot_pred(predY, datar$tY[[task]])
+```
+
+### 50/50 elastic net
+
+We can do the same for a 50/50 (alpha=0.5) elastic net model. 
+
+```{r}
+mod_elas <- cv.glmnet(datar$X[[task]], datar$Y[[task]], alpha=0.5, family="gaussian", nlambda=50)
+plot(mod_elas)
+```
+
+```{r}
+predY <- predict(mod_elas, newx = datar$tX[[task]], s = "lambda.min")
+predY <- as.vector(predY)
+plot_pred(predY, datar$tY[[task]])
+```
+
+So basically no difference. 
+
+### MTL approach
+
+
+```{r}
+
+cvfitr <- cvMTL(datar$X, datar$Y, type="Regression", Regularization="L21", Lam1_seq=10^seq(1,-4, -1),  Lam2=0, opts=list(init=0,  tol=10^-6, maxIter=1500), nfolds=5, stratify=FALSE, parallel=FALSE)
+
+```
+
+So we've got the best value of lambda1 (.01). Now we can fit the model. 
+
+```{r}
+
+model_mtl<-MTL(datar$X, datar$Y, type="Regression", Regularization="L21",
+  Lam1=cvfitr$Lam1.min, Lam2=0, opts=list(init=0,  tol=10^-6,
+  maxIter=1500), Lam1_seq=cvfitr$Lam1_seq)
+
+```
+
+
+```{r}
+predYall <- predict(model_mtl, datar$tX)
+predY <- as.vector(predYall[[task]])
+plot_pred(predY, datar$tY[[task]])
+```
